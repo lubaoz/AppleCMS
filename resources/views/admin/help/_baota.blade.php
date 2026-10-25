@@ -1,8 +1,5 @@
 @php
-    $cronLine = \App\Support\PhpCli::scheduleCronLine();
-    $baotaScript = preg_replace('/^\* \* \* \* \* /', '', $cronLine) ?: $cronLine;
-    $baotaExample = '/www/server/php/84/bin/php /www/wwwroot/你的站点/artisan schedule:run >> /dev/null 2>&1';
-    $baotaFill = str_contains($baotaScript, 'php-fpm') ? $baotaExample : $baotaScript;
+    $baotaFill = \App\Support\PhpCli::baotaScheduleCommand();
     $menus = ['首页', '网站', 'FTP', '数据库', '监控', '安全', '文件', '计划任务', '软件商店', '设置'];
     $photo = function (string $file): string {
         $name = $file === '2-root.png' ? '3-run.png' : $file;

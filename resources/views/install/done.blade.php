@@ -20,7 +20,7 @@
                 <p class="hint">已写入默认分类和示例影片。采集资源前，先在「采集资源」里绑定分类。</p>
             @endif
             @php
-                $baotaCron = preg_replace('/^\* \* \* \* \* /', '', \App\Support\PhpCli::scheduleCronLine());
+                $baotaCron = \App\Support\PhpCli::baotaScheduleCommand();
             @endphp
             <div class="install-next">
                 <h2>还差这一步</h2>
