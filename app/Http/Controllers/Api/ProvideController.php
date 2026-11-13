@@ -87,7 +87,7 @@ class ProvideController extends Controller
             $query->where('updated_at', '>=', time() - $hours * 3600);
         }
 
-        $paginator = $query->orderByDesc('id')->paginate($limit, ['*'], 'pg', $page);
+        $paginator = $query->orderByDesc('updated_at')->orderByDesc('id')->paginate($limit, ['*'], 'pg', $page);
         $detail = $ac === 'detail' || $ac === 'videolist' || $ids !== '';
         $list = [];
         foreach ($paginator->items() as $video) {
