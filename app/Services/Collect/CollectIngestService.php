@@ -526,6 +526,9 @@ class CollectIngestService
         if ($video && (int) $video->lock === 1) {
             return ['action' => 'skipped', 'msg' => '已锁定', 'title' => $title, 'id' => $video->id];
         }
+        if ($video && $this->collectUnchanged($video, $item)) {
+            return ['action' => 'skipped', 'msg' => '无变化', 'title' => $title, 'id' => $video->id];
+        }
 
         $cover = ((int) $settings->get('collect_sync_pic', '1') === 1)
             ? (string) ($item['vod_pic'] ?? '')
@@ -551,7 +554,7 @@ class CollectIngestService
             'status' => ($hit && $hit['action'] === 'review') ? 0 : (int) $settings->get('collect_in_status', '1'),
             'collect_id' => $collectId,
             'collect_source_id' => $source->id,
-            'updated_at' => $now,
+            'updated_at' => $this->sourceUpdatedAt($item) ?? $now,
         ];
         if (Schema::hasColumn('videos', 'weekday')) {
             $payload['weekday'] = (string) ($item['vod_weekday'] ?? $item['weekday'] ?? '');
@@ -597,6 +600,118 @@ class CollectIngestService
 
             return ['action' => $action, 'msg' => ($hit ? '审核:'.$hit['rule'] : 'ok'), 'title' => $title, 'id' => $video->id];
         });
+    }
+
+    /**
+     * 已有影片只有集数、备注、播放地址或源站更新时间变了才写入。
+     * 列表接口经常不带播放地址，这时不拿空地址去否定库里的分集。
+     */
+    private function collectUnchanged(VideoModel $video, array $item): bool
+    {
+        if (trim((string) ($item['vod_remarks'] ?? '')) !== trim((string) $video->remarks)) {
+            return false;
+        }
+        $serial = trim((string) ($item['vod_serial'] ?? ''));
+        if ($serial !== '' && $serial !== trim((string) $video->serial)) {
+            return false;
+        }
+        $sourceAt = $this->sourceUpdatedAt($item);
+        if ($sourceAt !== null && $sourceAt !== (int) $video->updated_at) {
+            return false;
+        }
+        if (! $this->playPayloadUnchanged($video, $item, 'play')) {
+            return false;
+        }
+
+        return $this->playPayloadUnchanged($video, $item, 'down');
+    }
+
+    private function playPayloadUnchanged(VideoModel $video, array $item, string $kind): bool
+    {
+        $fromKey = $kind === 'down' ? 'vod_down_from' : 'vod_play_from';
+        $urlKey = $kind === 'down' ? 'vod_down_url' : 'vod_play_url';
+        $from = trim((string) ($item[$fromKey] ?? ''));
+        $url = trim((string) ($item[$urlKey] ?? ''));
+        if ($from === '' && $url === '') {
+            return true;
+        }
+        if (! $video->relationLoaded('sources')) {
+            $video->load(['sources.episodes']);
+        }
+
+        return $this->playSignature($this->parser->parse($from, $url))
+            === $this->playSignature($this->storedPlayGroups($video, $kind));
+    }
+
+    /** @param  iterable<int, mixed>  $groups */
+    private function playSignature(iterable $groups): string
+    {
+        $lines = [];
+        foreach ($groups as $group) {
+            $name = trim((string) (is_array($group) ? ($group['name'] ?? '') : ''));
+            $episodes = is_array($group) ? ($group['episodes'] ?? []) : [];
+            $parts = [];
+            foreach ($episodes as $ep) {
+                if (! is_array($ep)) {
+                    continue;
+                }
+                $parts[] = (int) ($ep['num'] ?? 0)."\t".trim((string) ($ep['name'] ?? ''))."\t".trim((string) ($ep['url'] ?? ''));
+            }
+            $lines[] = $name."\n".implode("\n", $parts);
+        }
+
+        return implode("\n---\n", $lines);
+    }
+
+    /** @return list<array{name:string,episodes:list<array{name:string,num:int,url:string}>}> */
+    private function storedPlayGroups(VideoModel $video, string $kind): array
+    {
+        $groups = [];
+        $sources = $video->sources
+            ->filter(function ($source) use ($kind) {
+                $type = (string) ($source->type ?: 'play');
+
+                return $kind === 'down' ? $type === 'down' : $type !== 'down';
+            })
+            ->sortBy([['sort', 'desc'], ['id', 'asc']])
+            ->values();
+        foreach ($sources as $source) {
+            $episodes = [];
+            foreach ($source->episodes as $ep) {
+                if ((int) $ep->status !== 1) {
+                    continue;
+                }
+                $episodes[] = [
+                    'name' => trim((string) ($ep->episode_name ?? '')),
+                    'num' => (int) $ep->episode_num,
+                    'url' => trim((string) ($ep->url ?? '')),
+                ];
+            }
+            $groups[] = [
+                'name' => trim((string) ($source->player ?: $source->getRawOriginal('name') ?: '')),
+                'episodes' => $episodes,
+            ];
+        }
+
+        return $groups;
+    }
+
+    /** 源站 vod_time 按应用时区解析，解析不了就交给调用方用采集时刻。 */
+    private function sourceUpdatedAt(array $item): ?int
+    {
+        $raw = trim((string) ($item['vod_time'] ?? ''));
+        if ($raw === '') {
+            return null;
+        }
+        $tz = new \DateTimeZone((string) config('app.timezone', 'UTC'));
+        $dt = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $raw, $tz);
+        $errors = \DateTimeImmutable::getLastErrors();
+        if ($dt instanceof \DateTimeImmutable && ($errors === false || (($errors['warning_count'] ?? 0) === 0 && ($errors['error_count'] ?? 0) === 0))) {
+            return $dt->getTimestamp();
+        }
+        $ts = strtotime($raw);
+
+        return $ts === false ? null : $ts;
     }
 
     private function mergePlay(VideoModel $video, string $from, string $url, int $now, string $kind = 'play'): void
