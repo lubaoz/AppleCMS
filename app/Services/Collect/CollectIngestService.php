@@ -629,7 +629,8 @@ class CollectIngestService
         $urlKey = $kind === 'down' ? 'vod_down_url' : 'vod_play_url';
         $from = trim((string) ($item[$fromKey] ?? ''));
         $url = trim((string) ($item[$urlKey] ?? ''));
-        if ($from === '' && $url === '') {
+        // 列表只给线路名，如 jpm3u8，不给分集地址。不能把空地址当成「分集被清空」。
+        if ($url === '') {
             return true;
         }
         if (! $video->relationLoaded('sources')) {
