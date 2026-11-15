@@ -6145,6 +6145,38 @@ pre.out, pre.code-block {
     border-top-color: #3b82c4;
     box-shadow: 0 0 0 8px rgba(91, 156, 255, .08);
 }
+.ui-loading-actions {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 4px;
+}
+.collect-bg-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    border-radius: 10px;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    color: #1e3a8a;
+    font-size: 13px;
+}
+.collect-bg-bar[hidden] { display: none; }
+.collect-bg-bar-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+.collect-bg-bar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
 @keyframes ui-spin { to { transform: rotate(360deg); } }
 @keyframes ui-pulse {
     0%, 100% { transform: scale(.42); opacity: .35; }

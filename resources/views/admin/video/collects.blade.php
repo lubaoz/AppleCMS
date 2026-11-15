@@ -60,6 +60,13 @@
         'collect_fx_tag_run' => admin_t('ui.collect_fx_tag_run'),
         'collect_fx_tag_temp' => admin_t('ui.collect_fx_tag_temp'),
         'collect_fx_click_close' => admin_t('ui.collect_fx_click_close'),
+        'collect_fx_pause' => admin_t('ui.collect_fx_pause'),
+        'collect_fx_pausing' => admin_t('ui.collect_fx_pausing'),
+        'collect_fx_paused' => admin_t('ui.collect_fx_paused'),
+        'collect_fx_stop' => admin_t('ui.collect_fx_stop'),
+        'collect_fx_stopped' => admin_t('ui.collect_fx_stopped'),
+        'collect_fx_resume' => admin_t('ui.collect_fx_resume'),
+        'collect_fx_close' => admin_t('ui.collect_fx_close'),
         'resume_done' => admin_t('ui.resume_done'),
         'retry_done' => admin_t('ui.retry_done'),
         'confirm_collect_all' => admin_t('ui.confirm_collect_all'),
@@ -117,6 +124,7 @@
             「<a href="/admin/video/unions">{{ admin_t('ui.unions_link') }}</a>」{{ admin_t('ui.collects_lead_cj') }}
             「<a href="/admin/video/cj">{{ admin_t('ui.cj_link') }}</a>」{{ admin_t('ui.collects_lead_tail') }}
         </p>
+        <div id="collect-bg-bar" class="collect-bg-bar" hidden></div>
         <div id="collect-source-table" class="desk-table"></div>
     </div>
 </div>
@@ -310,6 +318,16 @@
     var collectRunId = 0;
     var collectFxHide = 0;
     var lastProgress = {};
+    var collectStopMode = '';
+    var collectAbort = null;
+    var collectTotals = {created: 0, updated: 0, skipped: 0};
+    var collectPageAdded = false;
+    var collectHistoryLines = [];
+    var collectActiveRow = null;
+    var collectActiveHours = 0;
+    var collectSessionToken = 0;
+    var collectModalHidden = false;
+    var collectBgBar = document.getElementById('collect-bg-bar');
     function collectStats(p) {
         p = p || {};
         return [
@@ -357,46 +375,174 @@
         }
         return msg || L.collect_tip_connect || '正在连接资源站…';
     }
+    function hideCollectModal() {
+        collectModalHidden = true;
+        U.loading(false);
+        paintCollect(collectActiveRow ? collectActiveRow.name : '', lastProgress);
+    }
+    function showCollectModal() {
+        collectModalHidden = false;
+        if (collectBgBar) collectBgBar.hidden = true;
+        paintCollect(collectActiveRow ? collectActiveRow.name : '', lastProgress);
+    }
+    function paintBgBar(title, meta, displayP) {
+        if (!collectBgBar) return;
+        if (!collectBusy || !collectModalHidden) {
+            collectBgBar.hidden = true;
+            collectBgBar.innerHTML = '';
+            return;
+        }
+        collectBgBar.hidden = false;
+        var summary = U.escape(title) + (meta ? ' · ' + U.escape(meta) : '');
+        summary += ' · ' + (L.collect_fx_new || '新增') + ' ' + (parseInt(displayP.created, 10) || 0)
+            + ' / ' + (L.collect_fx_upd || '更新') + ' ' + (parseInt(displayP.updated, 10) || 0)
+            + ' / ' + (L.collect_fx_skip || '跳过') + ' ' + (parseInt(displayP.skipped, 10) || 0);
+        collectBgBar.innerHTML = '<div class="collect-bg-bar-info"><strong>' + summary + '</strong></div>'
+            + '<div class="collect-bg-bar-actions">'
+            + '<button type="button" class="btn btn-primary btn-sm" id="collect-bg-show">' + U.escape(L.collect_fx_show || '查看进度') + '</button>'
+            + '<button type="button" class="btn btn-muted btn-sm" id="collect-bg-pause"' + (collectStopMode === 'pause' ? ' disabled' : '') + '>' + U.escape(collectStopMode === 'pause' ? (L.collect_fx_pausing || '正在暂停…') : (L.collect_fx_pause || '暂停采集')) + '</button>'
+            + '<button type="button" class="btn btn-danger btn-sm" id="collect-bg-stop">' + U.escape(L.collect_fx_stop || '停止采集') + '</button>'
+            + '</div>';
+        var showBtn = document.getElementById('collect-bg-show');
+        var pauseBtn = document.getElementById('collect-bg-pause');
+        var stopBtn = document.getElementById('collect-bg-stop');
+        if (showBtn) showBtn.addEventListener('click', showCollectModal);
+        if (pauseBtn) pauseBtn.addEventListener('click', pauseCollect);
+        if (stopBtn) stopBtn.addEventListener('click', stopCollectNow);
+    }
+    function pauseCollect() {
+        if (!collectBusy || collectStopMode) return;
+        collectStopMode = 'pause';
+        paintCollect(collectActiveRow ? collectActiveRow.name : '', lastProgress);
+    }
+    function stopCollectNow() {
+        if (!collectBusy) return;
+        collectStopMode = 'stop';
+        if (collectAbort) {
+            try { collectAbort.abort(); } catch (e) {}
+        }
+    }
+    function resumePausedCollect() {
+        if (collectBusy || !collectActiveRow) return;
+        var row = collectActiveRow;
+        var hours = collectActiveHours;
+        runCollectChain(row, hours, function (signal) {
+            return U.post('/admin/video/collects/resume', {id: row.id, pages: 1, hours: hours}, {signal: signal});
+        }, true);
+    }
+    function buildCollectActions(isDone, isPaused) {
+        if (!isDone && collectBusy) {
+            return [
+                {
+                    label: L.collect_fx_bg || '后台运行',
+                    cls: 'btn btn-muted btn-sm',
+                    onClick: hideCollectModal
+                },
+                {
+                    label: collectStopMode === 'pause' ? (L.collect_fx_pausing || '正在暂停，等待当前页完成…') : (L.collect_fx_pause || '暂停采集'),
+                    cls: 'btn btn-muted btn-sm',
+                    disabled: collectStopMode === 'pause',
+                    onClick: pauseCollect
+                },
+                {
+                    label: L.collect_fx_stop || '停止采集',
+                    cls: 'btn btn-danger btn-sm',
+                    onClick: stopCollectNow
+                }
+            ];
+        }
+        if (isDone) {
+            var list = [];
+            if (isPaused && collectActiveRow) {
+                list.push({
+                    label: L.collect_fx_resume || '继续采集',
+                    cls: 'btn btn-primary btn-sm',
+                    onClick: resumePausedCollect
+                });
+            }
+            list.push({
+                label: L.collect_fx_close || '关闭',
+                cls: 'btn btn-muted btn-sm',
+                onClick: stopCollectFx
+            });
+            return list;
+        }
+        return [];
+    }
     function paintCollect(name, p) {
         p = p || {};
         lastProgress = p;
-        var title = String(L.collecting_named || '正在采集「__NAME__」').replace('__NAME__', name || p.name || '');
+        var isDone = collectBusy ? false : !!p.done;
+        var displayP = p;
+        if (collectBusy) {
+            var curCreated = collectPageAdded ? 0 : (parseInt(p.created, 10) || 0);
+            var curUpdated = collectPageAdded ? 0 : (parseInt(p.updated, 10) || 0);
+            var curSkipped = collectPageAdded ? 0 : (parseInt(p.skipped, 10) || 0);
+            var curLines = Array.isArray(p.lines) ? p.lines : [];
+            displayP = Object.assign({}, p, {
+                created: collectTotals.created + curCreated,
+                updated: collectTotals.updated + curUpdated,
+                skipped: collectTotals.skipped + curSkipped,
+                lines: collectHistoryLines.concat(curLines).slice(-200)
+            });
+        }
+        var title = String(L.collecting_named || '正在采集「__NAME__」').replace('__NAME__', name || displayP.name || '');
         var meta = '';
-        var page = parseInt(p.page, 10) || 0;
-        var pages = parseInt(p.pages, 10) || 0;
+        var page = parseInt(displayP.page, 10) || 0;
+        var pages = parseInt(displayP.pages, 10) || 0;
         if (page > 0) {
             meta = String(L.collect_fx_page || '第 __P__ / __N__ 页')
                 .replace('__P__', String(page))
                 .replace('__N__', pages > 0 ? String(pages) : '…');
         }
-        if (p.done) {
+        if (isDone) {
             meta = (meta ? meta + ' · ' : '') + (L.collect_fx_click_close || '点击空白处关闭');
+        } else if (collectStopMode === 'pause') {
+            meta = (meta ? meta + ' · ' : '') + (L.collect_fx_pausing || '正在暂停，等待当前页完成…');
         }
+        if (collectBusy && collectModalHidden) {
+            paintBgBar(title, meta, displayP);
+            return;
+        }
+        if (collectBgBar) collectBgBar.hidden = true;
         U.loading(true, {
             kind: 'collect',
             title: title,
-            text: collectLine(p),
+            text: collectLine(displayP),
             meta: meta,
-            stats: collectStats(p),
-            logs: collectLogs(p),
-            done: !!p.done
+            stats: collectStats(displayP),
+            logs: collectLogs(displayP),
+            done: isDone,
+            actions: buildCollectActions(isDone, !!p.paused),
+            onClose: isDone ? stopCollectFx : null
         });
     }
-    function pollCollect(name, sourceId) {
+    function pollCollect(name, sourceId, token) {
         U.get('/admin/video/collects/progress', {id: sourceId}).then(function (res) {
+            if (token && token !== collectSessionToken) return;
             var p = (res && res.data) || {};
             paintCollect(name, p);
         });
     }
-    function startCollectFx(name, sourceId) {
+    function startCollectFx(name, sourceId, keepLines) {
         if (collectFxHide) { clearTimeout(collectFxHide); collectFxHide = 0; }
-        paintCollect(name, {msg: L.collect_tip_connect || '正在连接资源站…', lines: []});
+        collectModalHidden = false;
+        if (collectBgBar) collectBgBar.hidden = true;
+        collectSessionToken += 1;
+        var token = collectSessionToken;
+        paintCollect(name, {
+            msg: L.collect_tip_connect || '正在连接资源站…',
+            lines: keepLines ? [] : []
+        });
         if (collectFxTimer) clearInterval(collectFxTimer);
         if (!sourceId) return;
-        pollCollect(name, sourceId);
-        collectFxTimer = setInterval(function () { pollCollect(name, sourceId); }, 500);
+        pollCollect(name, sourceId, token);
+        collectFxTimer = setInterval(function () { pollCollect(name, sourceId, token); }, 500);
     }
     function stopCollectFx() {
+        collectModalHidden = false;
+        if (collectBgBar) collectBgBar.hidden = true;
+        collectSessionToken += 1;
         if (collectFxTimer) {
             clearInterval(collectFxTimer);
             collectFxTimer = 0;
@@ -407,7 +553,9 @@
         }
         U.loading(false);
     }
-    function finishCollectFx(name, res, fallbackMsg, sourceId) {
+    function finishCollectFx(name, res, fallbackMsg, sourceId, extraState) {
+        extraState = extraState || {};
+        collectSessionToken += 1;
         if (collectFxTimer) {
             clearInterval(collectFxTimer);
             collectFxTimer = 0;
@@ -419,21 +567,26 @@
         var apply = function (p) {
             p = p || {};
             var pageInfo = (res && res.data && res.data.page && typeof res.data.page === 'object') ? res.data.page : {};
+            var mergedLines = collectHistoryLines.concat(Array.isArray(p.lines) ? p.lines : []).slice(-200);
             paintCollect(name, {
-                created: (res && res.data && res.data.created) != null ? res.data.created : p.created,
-                updated: (res && res.data && res.data.updated) != null ? res.data.updated : p.updated,
-                skipped: (res && res.data && res.data.skipped) != null ? res.data.skipped : p.skipped,
-                action: (res && res.code === 0) ? 'done' : 'fail',
+                created: (res && res.data && res.data.created) != null ? res.data.created : (collectTotals.created || p.created),
+                updated: (res && res.data && res.data.updated) != null ? res.data.updated : (collectTotals.updated || p.updated),
+                skipped: (res && res.data && res.data.skipped) != null ? res.data.skipped : (collectTotals.skipped || p.skipped),
+                action: extraState.paused || extraState.stopped ? 'done' : ((res && res.code === 0) ? 'done' : 'fail'),
                 msg: (res && res.msg) || fallbackMsg || L.collect_done,
                 page: pageInfo.page || p.page || 0,
                 pages: pageInfo.pagecount || pageInfo.pageCount || p.pages || 0,
-                lines: p.lines || [],
+                lines: mergedLines,
                 done: true,
+                paused: !!extraState.paused,
+                stopped: !!extraState.stopped,
                 name: name || p.name
             });
-            collectFxHide = setTimeout(stopCollectFx, 8000);
+            if (!extraState.paused && !extraState.stopped) {
+                collectFxHide = setTimeout(stopCollectFx, 8000);
+            }
         };
-        if (sourceId) {
+        if (sourceId && !extraState.stopped) {
             U.get('/admin/video/collects/progress', {id: sourceId}).then(function (r) {
                 apply((r && r.data) || lastProgress);
             });
@@ -458,54 +611,85 @@
         }
         return msg;
     }
-    function runCollectChain(row, hours, makeFirst) {
+    function runCollectChain(row, hours, makeFirst, keepTotals) {
         if (String(row.status) === '0') { U.toast(L.please_enable_collect, 'err'); return; }
         if (collectBusy) return;
         collectBusy = true;
-        startCollectFx(row.name, row.id);
-        var totals = {created: 0, updated: 0, skipped: 0};
+        collectStopMode = '';
+        collectActiveRow = row;
+        collectActiveHours = hours || 0;
+        collectRunHours = hours || 0;
+        collectRunId = row.id;
+        if (!keepTotals) {
+            collectTotals = {created: 0, updated: 0, skipped: 0};
+            collectHistoryLines = [];
+        }
+        collectPageAdded = false;
+        collectAbort = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        startCollectFx(row.name, row.id, !!keepTotals);
         var guard = 0;
-        function finish(res, okMsg, bad) {
+        function finish(res, okMsg, bad, extraState) {
             collectBusy = false;
+            collectStopMode = '';
+            collectAbort = null;
             if (res && res.data) {
-                res.data.created = totals.created;
-                res.data.updated = totals.updated;
-                res.data.skipped = totals.skipped;
+                res.data.created = collectTotals.created;
+                res.data.updated = collectTotals.updated;
+                res.data.skipped = collectTotals.skipped;
             }
-            finishCollectFx(row.name, res, okMsg || L.collect_done, row.id);
+            finishCollectFx(row.name, res, okMsg || L.collect_done, row.id, extraState);
             table.refresh();
             U.toast(okMsg || ((res && res.msg) || L.collect_done), bad ? 'err' : 'ok');
         }
         function after(res, requested) {
+            if (collectStopMode === 'stop' || (res && res.aborted)) {
+                var stopMsg = L.collect_fx_stopped || '已停止采集';
+                finish({code: 0, msg: stopMsg, data: {}}, stopMsg, false, {stopped: true});
+                return;
+            }
             if (!res || res.code !== 0) {
                 var msg = collectTimeoutMsg(res, requested);
                 finish(res, msg || L.collect_done, true);
                 return;
             }
-            totals.created += parseInt(res.data && res.data.created, 10) || 0;
-            totals.updated += parseInt(res.data && res.data.updated, 10) || 0;
-            totals.skipped += parseInt(res.data && res.data.skipped, 10) || 0;
+            collectPageAdded = true;
+            collectTotals.created += parseInt(res.data && res.data.created, 10) || 0;
+            collectTotals.updated += parseInt(res.data && res.data.updated, 10) || 0;
+            collectTotals.skipped += parseInt(res.data && res.data.skipped, 10) || 0;
+            if (Array.isArray(lastProgress.lines) && lastProgress.lines.length) {
+                collectHistoryLines = collectHistoryLines.concat(lastProgress.lines).slice(-200);
+            }
             var cur = collectPageNo(res) || requested;
             var total = collectPageTotal(res);
+            if (collectStopMode === 'pause') {
+                var pauseMsg = (L.collect_fx_paused || '已暂停采集') + '（已采至第 ' + cur + ' 页）';
+                res.msg = pauseMsg;
+                finish(res, pauseMsg, false, {paused: true});
+                return;
+            }
             guard += 1;
             if (total > cur && guard < 999 && cur >= requested) {
-                U.post('/admin/video/collects/run', {id: row.id, page: cur + 1, pages: 1, hours: hours || 0, quiet: 1}).then(function (next) {
+                collectPageAdded = false;
+                collectAbort = typeof AbortController !== 'undefined' ? new AbortController() : null;
+                U.post('/admin/video/collects/run', {id: row.id, page: cur + 1, pages: 1, hours: hours || 0, quiet: 1}, {
+                    signal: collectAbort ? collectAbort.signal : undefined
+                }).then(function (next) {
                     after(next, cur + 1);
                 });
                 return;
             }
-            var msg = '采集完成，新增 ' + totals.created + '，更新 ' + totals.updated + '，跳过 ' + totals.skipped;
+            var msg = '采集完成，新增 ' + collectTotals.created + '，更新 ' + collectTotals.updated + '，跳过 ' + collectTotals.skipped;
             if (res) res.msg = msg;
             finish(res, msg, false);
         }
-        makeFirst().then(function (res) { after(res, collectPageNo(res) || 1); });
+        makeFirst(collectAbort ? collectAbort.signal : undefined).then(function (res) { after(res, collectPageNo(res) || 1); });
     }
     function runCollect(row, hours, confirmText) {
         if (confirmText && !U.confirm(confirmText)) return;
         collectRunHours = hours || 0;
         collectRunId = row.id;
-        runCollectChain(row, hours, function () {
-            return U.post('/admin/video/collects/run', {id: row.id, page: 1, pages: 1, hours: hours || 0});
+        runCollectChain(row, hours, function (signal) {
+            return U.post('/admin/video/collects/run', {id: row.id, page: 1, pages: 1, hours: hours || 0}, {signal: signal});
         });
     }
 
@@ -595,11 +779,13 @@
         if (a.classList.contains('js-all')) runCollect(row, 0, L.confirm_collect_all);
         if (a.classList.contains('js-resume')) {
             var resumeHours = String(collectRunId) === String(row.id) ? collectRunHours : 0;
-            runCollectChain(row, resumeHours, function () {
-                return U.post('/admin/video/collects/resume', {id: row.id, pages: 1, hours: resumeHours});
+            runCollectChain(row, resumeHours, function (signal) {
+                return U.post('/admin/video/collects/resume', {id: row.id, pages: 1, hours: resumeHours}, {signal: signal});
             });
         }
         if (a.classList.contains('js-retry')) {
+            collectTotals = {created: 0, updated: 0, skipped: 0};
+            collectHistoryLines = [];
             startCollectFx(row.name, row.id);
             U.post('/admin/video/collects/retry', {id: row.id}).then(function (res) {
                 finishCollectFx(row.name, res, L.retry_done, row.id);

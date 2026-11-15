@@ -66,7 +66,7 @@
         return '请求失败';
     }
 
-    function request(method, url, data) {
+    function request(method, url, data, extra) {
         var opts = {
             method: method,
             credentials: 'same-origin',
@@ -76,6 +76,9 @@
                 Accept: 'application/json'
             }
         };
+        if (extra && extra.signal) {
+            opts.signal = extra.signal;
+        }
         if (method === 'GET') {
             var q = qs(data);
             if (q) url += (url.indexOf('?') >= 0 ? '&' : '?') + q;
@@ -104,7 +107,10 @@
             }).catch(function () {
                 return { code: 1, msg: statusMsg(r) };
             });
-        }).catch(function () {
+        }).catch(function (err) {
+            if (err && err.name === 'AbortError') {
+                return { code: 1, aborted: true, msg: '已停止' };
+            }
             return { code: 1, msg: '网络错误' };
         });
     }
@@ -150,11 +156,18 @@
                 + '<p class="ui-loading-meta" hidden></p>'
                 + '<div class="ui-loading-log" hidden></div>'
                 + '<div class="ui-loading-bar"><i></i></div>'
+                + '<div class="ui-loading-actions" hidden></div>'
                 + '</div>';
         }
         var done = !!(msg && typeof msg === 'object' && msg.done);
+        var onClose = (msg && typeof msg === 'object' && typeof msg.onClose === 'function') ? msg.onClose : null;
         el.className = 'ui-loading' + (kind ? ' is-' + kind : '') + (done ? ' is-done' : '');
-        el.onclick = done ? function (e) { if (e.target === el) loading(false); } : null;
+        el.onclick = done ? function (e) {
+            if (e.target === el) {
+                if (onClose) onClose();
+                else loading(false);
+            }
+        } : null;
         var t = el.querySelector('.ui-loading-title');
         var p = el.querySelector('.ui-loading-text');
         var statsEl = el.querySelector('.ui-loading-stats');
@@ -201,6 +214,28 @@
                 logEl.hidden = true;
                 logEl.innerHTML = '';
                 if (p) p.hidden = false;
+            }
+        }
+        var actionsEl = el.querySelector('.ui-loading-actions');
+        var actions = (msg && typeof msg === 'object' && Array.isArray(msg.actions)) ? msg.actions : [];
+        if (actionsEl) {
+            actionsEl.innerHTML = '';
+            if (actions.length) {
+                actionsEl.hidden = false;
+                actions.forEach(function (act) {
+                    if (!act) return;
+                    var btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = act.cls || 'btn btn-muted btn-sm';
+                    btn.textContent = act.label || '';
+                    btn.disabled = !!act.disabled;
+                    if (typeof act.onClick === 'function') {
+                        btn.addEventListener('click', act.onClick);
+                    }
+                    actionsEl.appendChild(btn);
+                });
+            } else {
+                actionsEl.hidden = true;
             }
         }
     }
@@ -877,8 +912,8 @@
         csrf: csrf,
         escape: escape,
         pickMsg: pickMsg,
-        get: function (url, data) { return request('GET', url, data); },
-        post: function (url, data) { return request('POST', url, data); },
+        get: function (url, data, extra) { return request('GET', url, data, extra); },
+        post: function (url, data, extra) { return request('POST', url, data, extra); },
         toast: toast,
         loading: loading,
         confirm: function (msg) { return global.confirm(msg || _('confirm', '确认？')); },
