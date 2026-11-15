@@ -603,8 +603,9 @@ class CollectIngestService
     }
 
     /**
-     * 已有影片只有集数、备注、播放地址或源站更新时间变了才写入。
-     * 列表接口经常不带播放地址，这时不拿空地址去否定库里的分集。
+     * 已有影片只在备注、集数或分集本身变了才写入。
+     * 本地 updated_at 以前是采集时刻，不能拿它和源站 vod_time 比较，否则旧数据永远算变化。
+     * 播放地址里的一次性令牌也不算变化。列表响应没有播放地址时，不拿空地址否定库里的分集。
      */
     private function collectUnchanged(VideoModel $video, array $item): bool
     {
@@ -613,10 +614,6 @@ class CollectIngestService
         }
         $serial = trim((string) ($item['vod_serial'] ?? ''));
         if ($serial !== '' && $serial !== trim((string) $video->serial)) {
-            return false;
-        }
-        $sourceAt = $this->sourceUpdatedAt($item);
-        if ($sourceAt !== null && $sourceAt !== (int) $video->updated_at) {
             return false;
         }
         if (! $this->playPayloadUnchanged($video, $item, 'play')) {
@@ -632,7 +629,8 @@ class CollectIngestService
         $urlKey = $kind === 'down' ? 'vod_down_url' : 'vod_play_url';
         $from = trim((string) ($item[$fromKey] ?? ''));
         $url = trim((string) ($item[$urlKey] ?? ''));
-        if ($from === '' && $url === '') {
+        // 列表只给线路名，如 jpm3u8，不给分集地址。不能把空地址当成「分集被清空」。
+        if ($url === '') {
             return true;
         }
         if (! $video->relationLoaded('sources')) {
@@ -655,7 +653,7 @@ class CollectIngestService
                 if (! is_array($ep)) {
                     continue;
                 }
-                $parts[] = (int) ($ep['num'] ?? 0)."\t".trim((string) ($ep['name'] ?? ''))."\t".trim((string) ($ep['url'] ?? ''));
+                $parts[] = (int) ($ep['num'] ?? 0)."\t".trim((string) ($ep['name'] ?? ''))."\t".$this->stablePlayUrl((string) ($ep['url'] ?? ''));
             }
             $lines[] = $name."\n".implode("\n", $parts);
         }
@@ -694,6 +692,30 @@ class CollectIngestService
         }
 
         return $groups;
+    }
+
+    /** 去掉查询串和路径里的一次性令牌，只留下能代表同一集的地址。 */
+    private function stablePlayUrl(string $url): string
+    {
+        $url = trim($url);
+        if ($url === '' || ! str_contains($url, '://')) {
+            return $url;
+        }
+        $parts = parse_url($url);
+        if (! is_array($parts)) {
+            return $url;
+        }
+        $segments = array_values(array_filter(explode('/', (string) ($parts['path'] ?? '')), static fn ($seg) => $seg !== ''));
+        $normalized = [];
+        foreach ($segments as $seg) {
+            $token = ! str_contains($seg, '.')
+                && strlen($seg) >= 12
+                && (bool) preg_match('/^[A-Za-z0-9_-]+$/', $seg);
+            $normalized[] = $token ? '*' : $seg;
+        }
+        $host = strtolower((string) ($parts['host'] ?? ''));
+
+        return $host.'/'.implode('/', $normalized);
     }
 
     /** 源站 vod_time 按应用时区解析，解析不了就交给调用方用采集时刻。 */
