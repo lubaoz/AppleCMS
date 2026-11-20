@@ -97,6 +97,7 @@ class AppApi
             'type_id' => (int) ($video->type_id ?? 0),
             'type_name' => (string) ($video->type?->name ?? ''),
             'is_recommend' => (int) ($video->is_recommend ?? 0) === 1,
+            'is_hot' => (int) ($video->is_hot ?? 0) === 1,
             'serial' => (string) ($video->serial ?? ''),
             'updated_at' => (int) ($video->updated_at ?? 0),
         ];

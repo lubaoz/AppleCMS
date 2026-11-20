@@ -72,6 +72,9 @@ class VodTag
         if ($flag === 'recommend' || ! empty($options['recommend'])) {
             $query->where('is_recommend', 1);
         }
+        if ($flag === 'hot' || ! empty($options['hot'])) {
+            $query->where('is_hot', 1);
+        }
         if ($flag === 'slide' || $flag === 'level') {
             $query->where('level', '>=', (int) ($options['level'] ?? 1));
         }
@@ -156,10 +159,10 @@ class VodTag
         $query->select('videos.*');
 
         match ($order) {
-            'hits', 'hot' => $query->orderByDesc('video_stats.hits')->orderByDesc('videos.id'),
+            'hits', 'hot' => $query->orderByDesc('videos.sort')->orderByDesc('video_stats.hits')->orderByDesc('videos.updated_at')->orderByDesc('videos.id'),
             'score' => $query->orderByDesc('video_stats.score')->orderByDesc('videos.id'),
             'year' => $query->orderByDesc('videos.year')->orderByDesc('videos.id'),
-            'sort' => $query->orderByDesc('videos.sort')->orderByDesc('videos.id'),
+            'sort' => $query->orderByDesc('videos.sort')->orderByDesc('videos.updated_at')->orderByDesc('videos.id'),
             default => $query->orderByDesc('videos.updated_at')->orderByDesc('videos.id'),
         };
     }

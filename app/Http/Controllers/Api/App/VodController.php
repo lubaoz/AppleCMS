@@ -58,7 +58,7 @@ class VodController extends Controller
             'pic' => (string) ($s->pic ?? ''),
             'url' => (string) ($s->url ?? ''),
         ])->values()->all();
-        $recommend = $this->vodTag->get(['flag' => 'recommend', 'num' => 12]);
+        $recommend = $this->vodTag->get(['flag' => 'recommend', 'num' => 12, 'order' => 'sort']);
         $latest = $this->vodTag->get(['num' => 12, 'order' => 'time']);
         $hot = $this->vodTag->get(['flag' => 'hot', 'num' => 12, 'order' => 'hits']);
         $arts = app(ArtTag::class)->get(['num' => 6]);
